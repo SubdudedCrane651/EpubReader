@@ -1,7 +1,10 @@
 import sys
+import base64
+
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QTextBrowser, QFileDialog, QListWidget, QSplitter, QComboBox, QMainWindow, QAction
+    QTextBrowser, QFileDialog, QListWidget, QSplitter, QComboBox,
+    QMainWindow, QAction
 )
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
@@ -14,14 +17,15 @@ from bs4 import BeautifulSoup
 class EpubReader(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EPUB Reader (Chapters + Pages + Fonts)")
+        self.setWindowTitle("EPUB Reader (Chapters + Pages + Fonts + Cover)")
         self.resize(1000, 700)
 
-        self.chapters = []
-        self.pages = []
+        self.chapters = []          # list of chapter texts or "__COVER__"
+        self.pages = []             # pages for current chapter
         self.current_chapter = 0
         self.current_page = 0
         self.font_size = 14
+        self.cover_data = None      # raw bytes of cover image
 
         # ---------------- MENU BAR ----------------
         menu = self.menuBar()
@@ -38,7 +42,6 @@ class EpubReader(QMainWindow):
 
         main_layout = QVBoxLayout(central)
 
-        # Splitter for chapters + text
         splitter = QSplitter(Qt.Horizontal)
 
         # Chapter list
@@ -97,7 +100,22 @@ class EpubReader(QMainWindow):
         book = epub.read_epub(path)
         self.chapters.clear()
         self.chapter_list.clear()
+        self.cover_data = None
 
+        # ---- COVER EXTRACTION ----
+        for item in book.get_items():
+            if item.get_type() == ebooklib.ITEM_COVER:
+                self.cover_data = item.get_content()
+                break
+
+        if not self.cover_data:
+            # Fallback: look for an image with "cover" in the name
+            for item in book.get_items():
+                if item.get_type() == ebooklib.ITEM_IMAGE and "cover" in item.get_name().lower():
+                    self.cover_data = item.get_content()
+                    break
+
+        # ---- CHAPTER EXTRACTION ----
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_DOCUMENT:
                 soup = BeautifulSoup(item.get_content(), "html.parser")
@@ -105,6 +123,11 @@ class EpubReader(QMainWindow):
                 if text:
                     self.chapters.append(text)
                     self.chapter_list.addItem(item.get_name())
+
+        # Insert a virtual "Cover Page" at the top if we found a cover
+        if self.cover_data:
+            self.chapters.insert(0, "__COVER__")
+            self.chapter_list.insertItem(0, "Cover Page")
 
         if self.chapters:
             self.chapter_list.setCurrentRow(0)
@@ -115,10 +138,30 @@ class EpubReader(QMainWindow):
         if index < 0 or index >= len(self.chapters):
             return
 
+        # ---- COVER PAGE HANDLING ----
+        if self.chapters[index] == "__COVER__" and self.cover_data:
+            b64 = base64.b64encode(self.cover_data).decode("ascii")
+            # Try jpeg first; most covers are jpeg, but this still works for png in practice
+            html = f"""
+            <html>
+            <body style="background-color:#202020;">
+                <div style="text-align:center; margin-top:20px;">
+                    <img src="data:image/jpeg;base64,{b64}" style="max-width:90%; max-height:90%;" />
+                </div>
+            </body>
+            </html>
+            """
+            self.text_view.setHtml(html)
+            self.pages = []
+            self.current_chapter = index
+            self.current_page = 0
+            return
+
+        # ---- NORMAL TEXT CHAPTER ----
         self.current_chapter = index
         chapter_text = self.chapters[index]
 
-        page_size = 2000
+        page_size = 2000  # characters per page (simple logical paging)
         self.pages = [
             chapter_text[i:i + page_size]
             for i in range(0, len(chapter_text), page_size)
@@ -132,12 +175,12 @@ class EpubReader(QMainWindow):
             self.text_view.setPlainText(self.pages[self.current_page])
 
     def next_page(self):
-        if self.current_page < len(self.pages) - 1:
+        if self.pages and self.current_page < len(self.pages) - 1:
             self.current_page += 1
             self.display_page()
 
     def prev_page(self):
-        if self.current_page > 0:
+        if self.pages and self.current_page > 0:
             self.current_page -= 1
             self.display_page()
 
