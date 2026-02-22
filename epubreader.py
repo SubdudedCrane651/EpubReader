@@ -1,0 +1,163 @@
+import sys
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QTextBrowser, QFileDialog, QListWidget, QSplitter, QComboBox, QMainWindow, QAction
+)
+from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt
+
+import ebooklib
+from ebooklib import epub
+from bs4 import BeautifulSoup
+
+
+class EpubReader(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("EPUB Reader (Chapters + Pages + Fonts)")
+        self.resize(1000, 700)
+
+        self.chapters = []
+        self.pages = []
+        self.current_chapter = 0
+        self.current_page = 0
+        self.font_size = 14
+
+        # ---------------- MENU BAR ----------------
+        menu = self.menuBar()
+        file_menu = menu.addMenu("File")
+
+        open_action = QAction("Open EPUB", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self.open_epub)
+        file_menu.addAction(open_action)
+
+        # ---------------- CENTRAL WIDGET ----------------
+        central = QWidget()
+        self.setCentralWidget(central)
+
+        main_layout = QVBoxLayout(central)
+
+        # Splitter for chapters + text
+        splitter = QSplitter(Qt.Horizontal)
+
+        # Chapter list
+        self.chapter_list = QListWidget()
+        self.chapter_list.currentRowChanged.connect(self.load_chapter)
+        splitter.addWidget(self.chapter_list)
+
+        # Text viewer
+        self.text_view = QTextBrowser()
+        self.text_view.setFont(QFont("Times New Roman", self.font_size))
+        splitter.addWidget(self.text_view)
+
+        splitter.setSizes([200, 800])
+        main_layout.addWidget(splitter)
+
+        # ---------------- BOTTOM CONTROLS ----------------
+        controls = QHBoxLayout()
+
+        open_btn = QPushButton("Open EPUB")
+        open_btn.clicked.connect(self.open_epub)
+        controls.addWidget(open_btn)
+
+        prev_btn = QPushButton("◀ Prev Page")
+        prev_btn.clicked.connect(self.prev_page)
+        controls.addWidget(prev_btn)
+
+        next_btn = QPushButton("Next Page ▶")
+        next_btn.clicked.connect(self.next_page)
+        controls.addWidget(next_btn)
+
+        bigger_btn = QPushButton("A+")
+        bigger_btn.clicked.connect(self.increase_font)
+        controls.addWidget(bigger_btn)
+
+        smaller_btn = QPushButton("A-")
+        smaller_btn.clicked.connect(self.decrease_font)
+        controls.addWidget(smaller_btn)
+
+        self.font_selector = QComboBox()
+        self.font_selector.addItems(["Times New Roman", "Arial", "Calibri", "Courier New"])
+        self.font_selector.currentTextChanged.connect(self.change_font_family)
+        controls.addWidget(self.font_selector)
+
+        main_layout.addLayout(controls)
+
+    # ---------------- FILE LOADING ----------------
+
+    def open_epub(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select EPUB File", "", "EPUB Files (*.epub)"
+        )
+        if file_path:
+            self.load_epub(file_path)
+
+    def load_epub(self, path):
+        book = epub.read_epub(path)
+        self.chapters.clear()
+        self.chapter_list.clear()
+
+        for item in book.get_items():
+            if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                soup = BeautifulSoup(item.get_content(), "html.parser")
+                text = soup.get_text(separator="\n", strip=True)
+                if text:
+                    self.chapters.append(text)
+                    self.chapter_list.addItem(item.get_name())
+
+        if self.chapters:
+            self.chapter_list.setCurrentRow(0)
+
+    # ---------------- CHAPTER + PAGE HANDLING ----------------
+
+    def load_chapter(self, index):
+        if index < 0 or index >= len(self.chapters):
+            return
+
+        self.current_chapter = index
+        chapter_text = self.chapters[index]
+
+        page_size = 2000
+        self.pages = [
+            chapter_text[i:i + page_size]
+            for i in range(0, len(chapter_text), page_size)
+        ]
+
+        self.current_page = 0
+        self.display_page()
+
+    def display_page(self):
+        if self.pages:
+            self.text_view.setPlainText(self.pages[self.current_page])
+
+    def next_page(self):
+        if self.current_page < len(self.pages) - 1:
+            self.current_page += 1
+            self.display_page()
+
+    def prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.display_page()
+
+    # ---------------- FONT CONTROLS ----------------
+
+    def increase_font(self):
+        self.font_size += 2
+        self.text_view.setFont(QFont(self.font_selector.currentText(), self.font_size))
+
+    def decrease_font(self):
+        if self.font_size > 6:
+            self.font_size -= 2
+            self.text_view.setFont(QFont(self.font_selector.currentText(), self.font_size))
+
+    def change_font_family(self, family):
+        self.text_view.setFont(QFont(family, self.font_size))
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    reader = EpubReader()
+    reader.show()
+    sys.exit(app.exec_())
