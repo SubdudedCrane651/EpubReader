@@ -1,5 +1,7 @@
 import sys
+import os
 import base64
+import sqlite3
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -17,15 +19,21 @@ from bs4 import BeautifulSoup
 class EpubReader(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EPUB Reader (Chapters + Pages + Fonts + Cover)")
+        self.setWindowTitle("EPUB Reader (Cover + Chapters + Pages + Fonts + Progress)")
         self.resize(1000, 700)
 
-        self.chapters = []          # list of chapter texts or "__COVER__"
-        self.pages = []             # pages for current chapter
+        # Reader state
+        self.chapters = []
+        self.pages = []
         self.current_chapter = 0
         self.current_page = 0
         self.font_size = 14
-        self.cover_data = None      # raw bytes of cover image
+        self.cover_data = None
+        self.current_book = None
+
+        # ---------------- DATABASE ----------------
+        self.db_path = "reader.db"
+        self.init_database()
 
         # ---------------- MENU BAR ----------------
         menu = self.menuBar()
@@ -36,12 +44,11 @@ class EpubReader(QMainWindow):
         open_action.triggered.connect(self.open_epub)
         file_menu.addAction(open_action)
 
-        # ---------------- CENTRAL WIDGET ----------------
+        # ---------------- CENTRAL UI ----------------
         central = QWidget()
         self.setCentralWidget(central)
 
         main_layout = QVBoxLayout(central)
-
         splitter = QSplitter(Qt.Horizontal)
 
         # Chapter list
@@ -87,7 +94,47 @@ class EpubReader(QMainWindow):
 
         main_layout.addLayout(controls)
 
-    # ---------------- FILE LOADING ----------------
+    # ============================================================
+    # DATABASE
+    # ============================================================
+
+    def init_database(self):
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS progress (
+                book_path TEXT PRIMARY KEY,
+                chapter INTEGER,
+                page INTEGER
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def save_progress(self, book_path, chapter, page):
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO progress (book_path, chapter, page)
+            VALUES (?, ?, ?)
+            ON CONFLICT(book_path) DO UPDATE SET
+                chapter=excluded.chapter,
+                page=excluded.page
+        """, (book_path, chapter, page))
+        conn.commit()
+        conn.close()
+
+    def load_progress(self, book_path):
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT chapter, page FROM progress WHERE book_path=?", (book_path,))
+        row = cur.fetchone()
+        conn.close()
+        return row if row else (0, 0)
+
+    # ============================================================
+    # EPUB LOADING
+    # ============================================================
 
     def open_epub(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -97,7 +144,9 @@ class EpubReader(QMainWindow):
             self.load_epub(file_path)
 
     def load_epub(self, path):
+        self.current_book = os.path.abspath(path)
         book = epub.read_epub(path)
+
         self.chapters.clear()
         self.chapter_list.clear()
         self.cover_data = None
@@ -109,7 +158,6 @@ class EpubReader(QMainWindow):
                 break
 
         if not self.cover_data:
-            # Fallback: look for an image with "cover" in the name
             for item in book.get_items():
                 if item.get_type() == ebooklib.ITEM_IMAGE and "cover" in item.get_name().lower():
                     self.cover_data = item.get_content()
@@ -124,24 +172,31 @@ class EpubReader(QMainWindow):
                     self.chapters.append(text)
                     self.chapter_list.addItem(item.get_name())
 
-        # Insert a virtual "Cover Page" at the top if we found a cover
+        # Insert cover as chapter 0
         if self.cover_data:
             self.chapters.insert(0, "__COVER__")
             self.chapter_list.insertItem(0, "Cover Page")
 
-        if self.chapters:
-            self.chapter_list.setCurrentRow(0)
+        # ---- RESTORE PROGRESS ----
+        chapter, page = self.load_progress(self.current_book)
+        self.chapter_list.setCurrentRow(chapter)
+        self.current_page = page
 
-    # ---------------- CHAPTER + PAGE HANDLING ----------------
+    # ============================================================
+    # CHAPTER + PAGE HANDLING
+    # ============================================================
 
     def load_chapter(self, index):
         if index < 0 or index >= len(self.chapters):
             return
 
-        # ---- COVER PAGE HANDLING ----
+        # Save progress when switching chapters
+        if self.current_book:
+            self.save_progress(self.current_book, index, 0)
+
+        # ---- COVER PAGE ----
         if self.chapters[index] == "__COVER__" and self.cover_data:
             b64 = base64.b64encode(self.cover_data).decode("ascii")
-            # Try jpeg first; most covers are jpeg, but this still works for png in practice
             html = f"""
             <html>
             <body style="background-color:#202020;">
@@ -161,18 +216,24 @@ class EpubReader(QMainWindow):
         self.current_chapter = index
         chapter_text = self.chapters[index]
 
-        page_size = 2000  # characters per page (simple logical paging)
+        page_size = 2000
         self.pages = [
             chapter_text[i:i + page_size]
             for i in range(0, len(chapter_text), page_size)
         ]
 
-        self.current_page = 0
+        # Restore page if available
+        if self.current_book:
+            _, saved_page = self.load_progress(self.current_book)
+            self.current_page = min(saved_page, len(self.pages) - 1)
+
         self.display_page()
 
     def display_page(self):
         if self.pages:
             self.text_view.setPlainText(self.pages[self.current_page])
+            if self.current_book:
+                self.save_progress(self.current_book, self.current_chapter, self.current_page)
 
     def next_page(self):
         if self.pages and self.current_page < len(self.pages) - 1:
@@ -184,7 +245,9 @@ class EpubReader(QMainWindow):
             self.current_page -= 1
             self.display_page()
 
-    # ---------------- FONT CONTROLS ----------------
+    # ============================================================
+    # FONT CONTROLS
+    # ============================================================
 
     def increase_font(self):
         self.font_size += 2
