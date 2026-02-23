@@ -6,7 +6,7 @@ import sqlite3
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTextBrowser, QFileDialog, QListWidget, QSplitter, QComboBox,
-    QMainWindow, QAction, QLabel, QSizePolicy
+    QMainWindow, QAction, QSizePolicy
 )
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
@@ -15,11 +15,14 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 
 class EpubReader(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EPUB Reader (Full Height + Simple Pages)")
+        self.setWindowTitle("EPUB Reader (Python Version)")
         self.resize(1000, 700)
 
         # Reader state
@@ -30,6 +33,9 @@ class EpubReader(QMainWindow):
         self.font_size = 14
         self.cover_data = None
         self.current_book = None
+
+        # Prevent chapter selection from overriding restored page
+        self.suppress_load = False
 
         # ---------------- DATABASE ----------------
         self.db_path = "reader.db"
@@ -165,13 +171,16 @@ class EpubReader(QMainWindow):
                     break
 
         # ---- CHAPTER EXTRACTION ----
+        chapter_counter = 1
+
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_DOCUMENT:
                 soup = BeautifulSoup(item.get_content(), "html.parser")
                 text = soup.get_text(separator="\n", strip=True)
                 if text:
                     self.chapters.append(text)
-                    self.chapter_list.addItem(item.get_name())
+                    self.chapter_list.addItem(f"Chapter {chapter_counter}")
+                    chapter_counter += 1
 
         # Insert cover as chapter 0
         if self.cover_data:
@@ -180,8 +189,16 @@ class EpubReader(QMainWindow):
 
         # ---- RESTORE PROGRESS ----
         chapter, page = self.load_progress(self.current_book)
+
+        self.suppress_load = True
         self.chapter_list.setCurrentRow(chapter)
+        self.current_chapter = chapter
         self.current_page = page
+        self.suppress_load = False
+
+        self.load_chapter(chapter)
+        self.current_page = min(page, len(self.pages) - 1)
+        self.display_page()
 
     # ============================================================
     # SIMPLE PAGINATION
@@ -199,6 +216,9 @@ class EpubReader(QMainWindow):
     # ============================================================
 
     def load_chapter(self, index):
+        if self.suppress_load:
+            return
+
         if index < 0 or index >= len(self.chapters):
             return
 
@@ -229,9 +249,8 @@ class EpubReader(QMainWindow):
 
         self.pages = self.paginate_chapter(chapter_text)
 
-        if self.current_book:
-            _, saved_page = self.load_progress(self.current_book)
-            self.current_page = min(saved_page, len(self.pages) - 1)
+        _, saved_page = self.load_progress(self.current_book)
+        self.current_page = min(saved_page, len(self.pages) - 1)
 
         self.display_page()
 
@@ -241,7 +260,6 @@ class EpubReader(QMainWindow):
             total = len(self.pages)
             current = self.current_page + 1
 
-            # Convert newlines BEFORE the f-string
             safe_text = text.replace("\n", "<br>")
 
             html = f"""
