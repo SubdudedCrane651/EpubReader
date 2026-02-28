@@ -18,6 +18,8 @@ from bs4 import BeautifulSoup
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+import os
+os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
 class EpubReader(QMainWindow):
     def __init__(self):
