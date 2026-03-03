@@ -15,11 +15,6 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 
-import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-import os
-os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
 class EpubReader(QMainWindow):
     def __init__(self):
@@ -27,7 +22,6 @@ class EpubReader(QMainWindow):
         self.setWindowTitle("EPUB Reader (Python Version)")
         self.resize(1000, 700)
 
-        # Reader state
         self.chapters = []
         self.pages = []
         self.current_chapter = 0
@@ -35,15 +29,13 @@ class EpubReader(QMainWindow):
         self.font_size = 14
         self.cover_data = None
         self.current_book = None
+        self.images = {}
 
-        # Prevent chapter selection from overriding restored page
         self.suppress_load = False
 
-        # ---------------- DATABASE ----------------
         self.db_path = "reader.db"
         self.init_database()
 
-        # ---------------- MENU BAR ----------------
         menu = self.menuBar()
         file_menu = menu.addMenu("File")
 
@@ -52,28 +44,24 @@ class EpubReader(QMainWindow):
         open_action.triggered.connect(self.open_epub)
         file_menu.addAction(open_action)
 
-        # ---------------- CENTRAL UI ----------------
         central = QWidget()
         self.setCentralWidget(central)
 
         main_layout = QVBoxLayout(central)
         splitter = QSplitter(Qt.Horizontal)
 
-        # Chapter list
         self.chapter_list = QListWidget()
         self.chapter_list.currentRowChanged.connect(self.load_chapter)
         splitter.addWidget(self.chapter_list)
 
-        # Text viewer
         self.text_view = QTextBrowser()
         self.text_view.setFont(QFont("Times New Roman", self.font_size))
         self.text_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
         splitter.addWidget(self.text_view)
+
         splitter.setSizes([200, 800])
         main_layout.addWidget(splitter)
 
-        # ---------------- BOTTOM CONTROLS ----------------
         controls = QHBoxLayout()
 
         open_btn = QPushButton("Open EPUB")
@@ -103,9 +91,7 @@ class EpubReader(QMainWindow):
 
         main_layout.addLayout(controls)
 
-    # ============================================================
     # DATABASE
-    # ============================================================
 
     def init_database(self):
         conn = sqlite3.connect(self.db_path)
@@ -141,9 +127,7 @@ class EpubReader(QMainWindow):
         conn.close()
         return row if row else (0, 0)
 
-    # ============================================================
     # EPUB LOADING
-    # ============================================================
 
     def open_epub(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -159,37 +143,35 @@ class EpubReader(QMainWindow):
         self.chapters.clear()
         self.chapter_list.clear()
         self.cover_data = None
+        self.images.clear()
 
-        # ---- COVER EXTRACTION ----
+        # IMAGES
+        for item in book.get_items():
+            if item.get_type() == ebooklib.ITEM_IMAGE:
+                self.images[item.get_name()] = item.get_content()
+
+        # COVER
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_COVER:
                 self.cover_data = item.get_content()
                 break
 
-        if not self.cover_data:
-            for item in book.get_items():
-                if item.get_type() == ebooklib.ITEM_IMAGE and "cover" in item.get_name().lower():
-                    self.cover_data = item.get_content()
-                    break
-
-        # ---- CHAPTER EXTRACTION ----
+        # CHAPTERS
         chapter_counter = 1
 
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_DOCUMENT:
                 soup = BeautifulSoup(item.get_content(), "html.parser")
-                text = soup.get_text(separator="\n", strip=True)
-                if text:
-                    self.chapters.append(text)
+                html = self.embed_images(str(soup))
+                if html.strip():
+                    self.chapters.append(html)
                     self.chapter_list.addItem(f"Chapter {chapter_counter}")
                     chapter_counter += 1
 
-        # Insert cover as chapter 0
         if self.cover_data:
             self.chapters.insert(0, "__COVER__")
             self.chapter_list.insertItem(0, "Cover Page")
 
-        # ---- RESTORE PROGRESS ----
         chapter, page = self.load_progress(self.current_book)
 
         self.suppress_load = True
@@ -202,20 +184,56 @@ class EpubReader(QMainWindow):
         self.current_page = min(page, len(self.pages) - 1)
         self.display_page()
 
-    # ============================================================
-    # SIMPLE PAGINATION
-    # ============================================================
+    def embed_images(self, html):
+        soup = BeautifulSoup(html, "html.parser")
 
-    def paginate_chapter(self, text):
-        page_size = 2000
-        return [
-            text[i:i + page_size]
-            for i in range(0, len(text), page_size)
-        ]
+        for img in soup.find_all("img"):
+            src = img.get("src")
+            if not src:
+                continue
 
-    # ============================================================
+            key = src.split("/")[-1]
+
+            for stored_key, data in self.images.items():
+                if stored_key.endswith(key):
+                    b64 = base64.b64encode(data).decode("ascii")
+                    img["src"] = f"data:image/jpeg;base64,{b64}"
+                    break
+
+        return str(soup)
+
+    # FIXED PAGINATION
+
+    def paginate_chapter(self, html):
+        soup = BeautifulSoup(html, "html.parser")
+
+        blocks = []
+        for elem in soup.body.children:
+            if getattr(elem, "name", None) in ["p", "div", "img", "h1", "h2", "h3", "h4"]:
+                blocks.append(str(elem))
+
+        pages = []
+        current = []
+        length = 0
+        max_length = 1800
+
+        for block in blocks:
+            block_len = len(block)
+
+            if length + block_len > max_length and current:
+                pages.append("".join(current))
+                current = []
+                length = 0
+
+            current.append(block)
+            length += block_len
+
+        if current:
+            pages.append("".join(current))
+
+        return pages
+
     # CHAPTER + PAGE HANDLING
-    # ============================================================
 
     def load_chapter(self, index):
         if self.suppress_load:
@@ -227,7 +245,6 @@ class EpubReader(QMainWindow):
         if self.current_book:
             self.save_progress(self.current_book, index, 0)
 
-        # ---- COVER PAGE ----
         if self.chapters[index] == "__COVER__" and self.cover_data:
             b64 = base64.b64encode(self.cover_data).decode("ascii")
             html = f"""
@@ -245,11 +262,10 @@ class EpubReader(QMainWindow):
             self.current_page = 0
             return
 
-        # ---- NORMAL TEXT ----
         self.current_chapter = index
-        chapter_text = self.chapters[index]
+        chapter_html = self.chapters[index]
 
-        self.pages = self.paginate_chapter(chapter_text)
+        self.pages = self.paginate_chapter(chapter_html)
 
         _, saved_page = self.load_progress(self.current_book)
         self.current_page = min(saved_page, len(self.pages) - 1)
@@ -262,12 +278,10 @@ class EpubReader(QMainWindow):
             total = len(self.pages)
             current = self.current_page + 1
 
-            safe_text = text.replace("\n", "<br>")
-
             html = f"""
             <html>
             <body>
-            <div>{safe_text}</div>
+            <div>{text}</div>
             <div style="text-align:center; margin-top:20px; font-weight:bold;">
                 Page {current} / {total}
             </div>
@@ -290,9 +304,7 @@ class EpubReader(QMainWindow):
             self.current_page -= 1
             self.display_page()
 
-    # ============================================================
     # FONT CONTROLS
-    # ============================================================
 
     def increase_font(self):
         self.font_size += 2
