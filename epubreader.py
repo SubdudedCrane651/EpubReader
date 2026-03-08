@@ -361,4 +361,11 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     reader = EpubReader()
     reader.show()
+
+    # If launched by double-clicking an .epub file
+    if len(sys.argv) > 1:
+        epub_path = sys.argv[1]
+        if os.path.exists(epub_path) and epub_path.lower().endswith(".epub"):
+            reader.load_epub(epub_path)
+
     sys.exit(app.exec_())
