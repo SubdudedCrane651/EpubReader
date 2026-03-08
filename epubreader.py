@@ -36,6 +36,8 @@ class EpubReader(QMainWindow):
         self.cover_data = None
         self.current_book = None
         self.images = {}
+        self.book = None
+        self.toc_map = {}
 
         self.suppress_load = False
 
@@ -142,39 +144,69 @@ class EpubReader(QMainWindow):
         if file_path:
             self.load_epub(file_path)
 
+    def build_toc_map(self, toc, base_path=""):
+        """
+        Build a map of href -> title from the EPUB TOC.
+        Handles nested TOC structures.
+        """
+        for entry in toc:
+            if isinstance(entry, epub.Link):
+                href = entry.href.split("#")[0]
+                self.toc_map[href] = entry.title.strip() if entry.title else href
+            elif isinstance(entry, tuple) and len(entry) >= 2:
+                item, children = entry[0], entry[1]
+                if isinstance(item, epub.Link):
+                    href = item.href.split("#")[0]
+                    self.toc_map[href] = item.title.strip() if item.title else href
+                if children:
+                    self.build_toc_map(children, base_path)
+
+    def extract_title(self, item, default_title):
+        href = item.get_name()
+        href_key = href.split("#")[0]
+
+        if href_key in self.toc_map:
+            return self.toc_map[href_key]
+
+        soup = BeautifulSoup(item.get_content(), "html.parser")
+        if soup.title and soup.title.string:
+            return soup.title.string.strip()
+
+        return default_title
+
     def load_epub(self, path):
         self.current_book = os.path.abspath(path)
-        book = epub.read_epub(path)
+        self.book = epub.read_epub(path)
 
         self.chapters.clear()
         self.chapter_list.clear()
         self.cover_data = None
         self.images.clear()
+        self.toc_map = {}
 
-        # LOAD IMAGES FROM EPUB
-        for item in book.get_items():
+        self.build_toc_map(self.book.toc)
+
+        for item in self.book.get_items():
             if item.get_type() == ebooklib.ITEM_IMAGE:
                 self.images[item.get_name()] = item.get_content()
 
-        # LOAD COVER FROM DIRECTORY (cover.jpg)
         cover_path = os.path.join(os.path.dirname(path), "cover.jpg")
         if os.path.exists(cover_path):
             with open(cover_path, "rb") as f:
                 self.cover_data = f.read()
 
-        # CHAPTERS
         chapter_counter = 1
 
-        for item in book.get_items():
+        for item in self.book.get_items():
             if item.get_type() == ebooklib.ITEM_DOCUMENT:
                 soup = BeautifulSoup(item.get_content(), "html.parser")
                 html = self.embed_images(str(soup))
                 if html.strip():
+                    title = self.extract_title(item, f"Chapter {chapter_counter}")
                     self.chapters.append(html)
-                    self.chapter_list.addItem(f"Chapter {chapter_counter}")
+                    self.chapter_list.addItem(title)
                     chapter_counter += 1
 
-        # INSERT COVER PAGE
         if self.cover_data:
             self.chapters.insert(0, "__COVER__")
             self.chapter_list.insertItem(0, "Cover Page")
@@ -209,7 +241,7 @@ class EpubReader(QMainWindow):
 
         return str(soup)
 
-    # PAGINATION (BLOCK-BASED)
+    # PAGINATION
 
     def paginate_chapter(self, html):
         soup = BeautifulSoup(html, "html.parser")
@@ -251,7 +283,6 @@ class EpubReader(QMainWindow):
         if self.current_book:
             self.save_progress(self.current_book, index, 0)
 
-        # COVER PAGE
         if self.chapters[index] == "__COVER__" and self.cover_data:
             b64 = base64.b64encode(self.cover_data).decode("ascii")
             html = f"""
