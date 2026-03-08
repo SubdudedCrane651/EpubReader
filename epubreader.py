@@ -151,16 +151,16 @@ class EpubReader(QMainWindow):
         self.cover_data = None
         self.images.clear()
 
-        # IMAGES
+        # LOAD IMAGES FROM EPUB
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_IMAGE:
                 self.images[item.get_name()] = item.get_content()
 
-        # COVER
-        for item in book.get_items():
-            if item.get_type() == ebooklib.ITEM_COVER:
-                self.cover_data = item.get_content()
-                break
+        # LOAD COVER FROM DIRECTORY (cover.jpg)
+        cover_path = os.path.join(os.path.dirname(path), "cover.jpg")
+        if os.path.exists(cover_path):
+            with open(cover_path, "rb") as f:
+                self.cover_data = f.read()
 
         # CHAPTERS
         chapter_counter = 1
@@ -174,6 +174,7 @@ class EpubReader(QMainWindow):
                     self.chapter_list.addItem(f"Chapter {chapter_counter}")
                     chapter_counter += 1
 
+        # INSERT COVER PAGE
         if self.cover_data:
             self.chapters.insert(0, "__COVER__")
             self.chapter_list.insertItem(0, "Cover Page")
@@ -208,15 +209,14 @@ class EpubReader(QMainWindow):
 
         return str(soup)
 
-    # FIXED PAGINATION
+    # PAGINATION (BLOCK-BASED)
 
     def paginate_chapter(self, html):
         soup = BeautifulSoup(html, "html.parser")
 
         blocks = []
-        for elem in soup.body.children:
-            if getattr(elem, "name", None) in ["p", "div", "img", "h1", "h2", "h3", "h4"]:
-                blocks.append(str(elem))
+        for elem in soup.find_all(["p", "div", "img", "h1", "h2", "h3", "h4"]):
+            blocks.append(str(elem))
 
         pages = []
         current = []
@@ -251,6 +251,7 @@ class EpubReader(QMainWindow):
         if self.current_book:
             self.save_progress(self.current_book, index, 0)
 
+        # COVER PAGE
         if self.chapters[index] == "__COVER__" and self.cover_data:
             b64 = base64.b64encode(self.cover_data).decode("ascii")
             html = f"""
