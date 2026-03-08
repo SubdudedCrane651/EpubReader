@@ -41,7 +41,12 @@ class EpubReader(QMainWindow):
 
         self.suppress_load = False
 
-        self.db_path = "reader.db"
+        import pathlib
+
+        appdata = os.path.join(os.getenv("LOCALAPPDATA"), "EpubReader")
+        os.makedirs(appdata, exist_ok=True)
+
+        self.db_path = os.path.join(appdata, "reader.db")
         self.init_database()
 
         menu = self.menuBar()
