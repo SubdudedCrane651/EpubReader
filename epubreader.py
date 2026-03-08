@@ -2,6 +2,7 @@ import sys
 import os
 import base64
 import sqlite3
+from pathlib import Path
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -14,12 +15,6 @@ from PyQt5.QtCore import Qt
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
-
-import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-import os
-os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
 
 class EpubReader(QMainWindow):
@@ -41,14 +36,14 @@ class EpubReader(QMainWindow):
 
         self.suppress_load = False
 
-        import pathlib
+        # ⭐ FIXED: Always store DB in AppData (works in .exe)
+        appdata = Path(os.getenv("LOCALAPPDATA")) / "EpubReader"
+        appdata.mkdir(parents=True, exist_ok=True)
+        self.db_path = str(appdata / "reader.db")
 
-        appdata = os.path.join(os.getenv("LOCALAPPDATA"), "EpubReader")
-        os.makedirs(appdata, exist_ok=True)
-
-        self.db_path = os.path.join(appdata, "reader.db")
         self.init_database()
 
+        # UI SETUP
         menu = self.menuBar()
         file_menu = menu.addMenu("File")
 
@@ -105,7 +100,6 @@ class EpubReader(QMainWindow):
         main_layout.addLayout(controls)
 
     # DATABASE
-
     def init_database(self):
         conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
@@ -141,7 +135,6 @@ class EpubReader(QMainWindow):
         return row if row else (0, 0)
 
     # EPUB LOADING
-
     def open_epub(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select EPUB File", "", "EPUB Files (*.epub)"
@@ -149,29 +142,23 @@ class EpubReader(QMainWindow):
         if file_path:
             self.load_epub(file_path)
 
-    def build_toc_map(self, toc, base_path=""):
-        """
-        Build a map of href -> title from the EPUB TOC.
-        Handles nested TOC structures.
-        """
+    def build_toc_map(self, toc):
         for entry in toc:
             if isinstance(entry, epub.Link):
                 href = entry.href.split("#")[0]
-                self.toc_map[href] = entry.title.strip() if entry.title else href
-            elif isinstance(entry, tuple) and len(entry) >= 2:
-                item, children = entry[0], entry[1]
+                self.toc_map[href] = entry.title.strip()
+            elif isinstance(entry, tuple):
+                item, children = entry
                 if isinstance(item, epub.Link):
                     href = item.href.split("#")[0]
-                    self.toc_map[href] = item.title.strip() if item.title else href
+                    self.toc_map[href] = item.title.strip()
                 if children:
-                    self.build_toc_map(children, base_path)
+                    self.build_toc_map(children)
 
     def extract_title(self, item, default_title):
-        href = item.get_name()
-        href_key = href.split("#")[0]
-
-        if href_key in self.toc_map:
-            return self.toc_map[href_key]
+        href = item.get_name().split("#")[0]
+        if href in self.toc_map:
+            return self.toc_map[href]
 
         soup = BeautifulSoup(item.get_content(), "html.parser")
         if soup.title and soup.title.string:
@@ -191,10 +178,12 @@ class EpubReader(QMainWindow):
 
         self.build_toc_map(self.book.toc)
 
+        # Load images
         for item in self.book.get_items():
             if item.get_type() == ebooklib.ITEM_IMAGE:
                 self.images[item.get_name()] = item.get_content()
 
+        # Load cover.jpg from same folder
         cover_path = os.path.join(os.path.dirname(path), "cover.jpg")
         if os.path.exists(cover_path):
             with open(cover_path, "rb") as f:
@@ -247,7 +236,6 @@ class EpubReader(QMainWindow):
         return str(soup)
 
     # PAGINATION
-
     def paginate_chapter(self, html):
         soup = BeautifulSoup(html, "html.parser")
 
@@ -277,7 +265,6 @@ class EpubReader(QMainWindow):
         return pages
 
     # CHAPTER + PAGE HANDLING
-
     def load_chapter(self, index):
         if self.suppress_load:
             return
@@ -348,7 +335,6 @@ class EpubReader(QMainWindow):
             self.display_page()
 
     # FONT CONTROLS
-
     def increase_font(self):
         self.font_size += 2
         self.text_view.setFont(QFont(self.font_selector.currentText(), self.font_size))
@@ -367,7 +353,7 @@ if __name__ == "__main__":
     reader = EpubReader()
     reader.show()
 
-    # If launched by double-clicking an .epub file
+    # ⭐ FIXED: Double-click .epub support for .exe
     if len(sys.argv) > 1:
         epub_path = sys.argv[1]
         if os.path.exists(epub_path) and epub_path.lower().endswith(".epub"):
