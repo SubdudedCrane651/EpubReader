@@ -1,5 +1,5 @@
 .venv/
-dist
-build
+dist/
+build/
 *.exe
 *.dll
